@@ -7,6 +7,12 @@ const { JamClient } = require("jmap-jam");
 
 const JMAP_SESSION_URL = process.env.JMAP_SESSION_URL || "https://api.fastmail.com/jmap/session";
 
+// urn:ietf:params:jmap:core must always be included in the "using" array per RFC 8620.
+// The jmap-jam library's getCapabilitiesForMethodCalls only adds capabilities for entities
+// referenced in method calls (e.g., "Email" -> "urn:ietf:params:jmap:mail"), but "Core" is
+// never referenced as a method entity, so it's never included. We pass it explicitly.
+const JMAP_CORE_USING = { using: ["urn:ietf:params:jmap:core"] };
+
 const args = process.argv.slice(2);
 let JMAP_TOKEN = process.env.JMAP_TOKEN || "";
 
@@ -62,45 +68,51 @@ Available Tools:
 // Tool: Get mailboxes
 server.tool(
   "get_mailboxes",
-  {
-    description: "Retrieves all mailboxes for the authenticated JMAP account.",
-    inputSchema: z.object({}), // No input parameters needed for this tool
-  },
+  "Retrieves all mailboxes for the authenticated JMAP account.",
+  {},
   async () => {
-    const session = await jam.session;
-    const accountId = session.primaryAccounts["urn:ietf:params:jmap:mail"];
-    const [mailboxes] = await jam.api.Mailbox.get({ accountId });
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify(mailboxes, null, 2)
-      }]
-    };
+    try {
+      const session = await jam.session;
+      const accountId = session.primaryAccounts["urn:ietf:params:jmap:mail"];
+      const [mailboxes] = await jam.api.Mailbox.get({ accountId }, JMAP_CORE_USING);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(mailboxes, null, 2)
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: "text",
+          text: `Error fetching mailboxes: ${JSON.stringify(error) || String(error)}`
+        }],
+        isError: true
+      };
+    }
   }
 );
 
 // Tool: Fetch latest emails from a mailbox
 server.tool(
   "search_emails",
+  "Searches for emails in a specified mailbox, with optional filters and search parameters. Returns thread exemplars and their details.",
   {
-    description: "Searches for emails in a specified mailbox, with optional filters and search parameters. Returns thread exemplars and their details.",
-    inputSchema: z.object({
-      mailboxId: z.string().describe("The mailbox to search in."),
-      limit: z.number().default(15).describe("Max number of threads/emails to return."),
-      excludeMailboxIds: z.array(z.string()).optional().describe("Mailboxes to exclude."),
-      receivedBefore: z.string().datetime().optional().describe("Only emails received before this date (ISO 8601)."),
-      receivedAfter: z.string().datetime().optional().describe("Only emails received after this date (ISO 8601)."),
-      hasKeyword: z.string().optional().describe("Only emails with this keyword."),
-      notKeyword: z.string().optional().describe("Only emails without this keyword."),
-      hasAttachment: z.boolean().optional().describe("Only emails with/without attachments."),
-      searchText: z.string().optional().describe("Full-text search."),
-      searchFrom: z.string().optional().describe("Filter by sender."),
-      searchTo: z.string().optional().describe("Filter by recipient (To)."),
-      searchCc: z.string().optional().describe("Filter by recipient (Cc)."),
-      searchBcc: z.string().optional().describe("Filter by recipient (Bcc)."),
-      searchSubject: z.string().optional().describe("Filter by subject."),
-      searchBody: z.string().optional().describe("Filter by body content.")
-    })
+    mailboxId: z.string().describe("The mailbox to search in."),
+    limit: z.number().default(15).describe("Max number of threads/emails to return."),
+    excludeMailboxIds: z.array(z.string()).optional().describe("Mailboxes to exclude."),
+    receivedBefore: z.string().datetime().optional().describe("Only emails received before this date (ISO 8601)."),
+    receivedAfter: z.string().datetime().optional().describe("Only emails received after this date (ISO 8601)."),
+    hasKeyword: z.string().optional().describe("Only emails with this keyword."),
+    notKeyword: z.string().optional().describe("Only emails without this keyword."),
+    hasAttachment: z.boolean().optional().describe("Only emails with/without attachments."),
+    searchText: z.string().optional().describe("Full-text search."),
+    searchFrom: z.string().optional().describe("Filter by sender."),
+    searchTo: z.string().optional().describe("Filter by recipient (To)."),
+    searchCc: z.string().optional().describe("Filter by recipient (Cc)."),
+    searchBcc: z.string().optional().describe("Filter by recipient (Bcc)."),
+    searchSubject: z.string().optional().describe("Filter by subject."),
+    searchBody: z.string().optional().describe("Filter by body content.")
   },
   async (inputs) => {
     try {
@@ -204,7 +216,7 @@ server.tool(
           getThreadEmails: getThreadEmailsDraft,
           getEmailDetails: getEmailDetailsDraft
         };
-      });
+      }, JMAP_CORE_USING);
 
       return {
         content: [{
@@ -228,20 +240,19 @@ server.tool(
 // Tool: Get email content by ID
 server.tool(
   "get_email_content",
+  "Retrieves the full content of an email by its ID, including subject, sender, recipients, date, and body (text or HTML).",
   {
-    description: "Retrieves the full content of an email by its ID, including subject, sender, recipients, date, and body (text or HTML).",
-    inputSchema: z.object({
-      emailId: z.string().describe("The ID of the email to fetch.")
-    })
+    emailId: z.string().describe("The ID of the email to fetch.")
   },
   async ({ emailId }) => {
+    try {
     const session = await jam.session;
     const accountId = session.primaryAccounts["urn:ietf:params:jmap:mail"];
     const [emails] = await jam.api.Email.get({
       accountId,
       ids: [emailId],
       properties: ["id", "textBody", "htmlBody", "subject", "from", "to", "cc", "bcc", "sentAt", "receivedAt"]
-    });
+    }, JMAP_CORE_USING);
 
     if (!emails || emails.list.length === 0) {
       return {
@@ -304,6 +315,15 @@ server.tool(
         text: `Subject: ${email.subject || '(No Subject)'}\nFrom: ${email.from ? email.from.map(f => f.name ? `${f.name} <${f.email}>` : f.email).join(', ') : '(Unknown Sender)'}\nTo: ${email.to ? email.to.map(t => t.name ? `${t.name} <${t.email}>` : t.email).join(', ') : '(Unknown Recipient)'}\nDate: ${email.receivedAt || email.sentAt || '(Unknown Date)'}\n\n---\n\n${bodyContent}`
       }]
     };
+    } catch (error) {
+      return {
+        content: [{
+          type: "text",
+          text: `Error fetching email content: ${JSON.stringify(error) || String(error)}`
+        }],
+        isError: true
+      };
+    }
   }
 );
 
